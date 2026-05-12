@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.spec
+*.exe
+*.zip
+*.jpg
+*.png
+*.docx
+*.xlsx
+*.pdf
+.vendor_pdf/
