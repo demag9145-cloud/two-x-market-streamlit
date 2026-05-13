@@ -210,10 +210,13 @@ def render_signal(result: core.WorkflowResult) -> None:
 
 
 def style_checks(df: pd.DataFrame):
+    raw_status = df["狀態"].copy()
+
     def row_style(row: pd.Series) -> list[str]:
-        if row["狀態"] == "OK":
+        status = raw_status.loc[row.name]
+        if status == "OK":
             color = "background-color: #dcfce7"
-        elif row["狀態"] == "FAIL":
+        elif status == "FAIL":
             color = "background-color: #fecaca"
         else:
             color = "background-color: #fde68a"
