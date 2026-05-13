@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import csv
 import json
 import math
@@ -9,7 +11,10 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Checkbutton, Entry, Frame, IntVar, Label, StringVar, Text, Tk, ttk
+try:
+    from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Checkbutton, Entry, Frame, IntVar, Label, StringVar, Text, Tk, ttk
+except ImportError:
+    BOTH = END = LEFT = RIGHT = X = Y = Button = Checkbutton = Entry = Frame = IntVar = Label = StringVar = Text = Tk = ttk = None
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
