@@ -3,8 +3,13 @@ from dataclasses import asdict
 
 import pandas as pd
 import streamlit as st
+from streamlit.components.v1 import html as components_html
 
 import two_x_market_app as core
+
+
+LEFT_RATIO = 0.47
+RIGHT_RATIO = 0.53
 
 
 st.set_page_config(
@@ -20,20 +25,43 @@ st.markdown(
     <style>
     .stApp { background: #eef3f6; color: #102a43; }
     [data-testid="stSidebar"] { display: none; }
-    .block-container { padding: .75rem 1.15rem 1.1rem 1.15rem; max-width: 100%; }
-    .topbar {
-        background: #17384d;
-        color: white;
-        padding: .8rem 1rem;
-        border-radius: 0;
-        margin: -.75rem -1.15rem .7rem -1.15rem;
-    }
-    .top-title { font-size: 1.55rem; font-weight: 800; line-height: 1.25; }
+    .block-container { padding: 1rem 1.15rem 1.1rem 1.15rem; max-width: 100%; }
     .option-row {
         background: #eef3f6;
         color: #213547;
-        padding: .15rem 0 .55rem 0;
+        padding: .35rem 0 .55rem 0;
         font-size: .9rem;
+    }
+    .api-key-label {
+        color: #213547;
+        font-size: .92rem;
+        font-weight: 800;
+        line-height: 1.25;
+    }
+    .api-key-help {
+        color: #486581;
+        font-size: .82rem;
+        line-height: 1.25;
+        margin: .12rem 0 .32rem 0;
+    }
+    .source-badge {
+        display: inline-block;
+        color: #213547;
+        background: #e6f4ef;
+        border: 1px solid #6abf9d;
+        border-radius: 4px;
+        padding: .3rem .55rem;
+        font-size: .88rem;
+        font-weight: 800;
+        line-height: 1.2;
+        margin-top: .36rem;
+    }
+    .mode-note {
+        color: #2563eb;
+        font-size: .9rem;
+        font-weight: 800;
+        line-height: 1.35;
+        padding-top: .58rem;
     }
     .section-title {
         color: #213547;
@@ -84,10 +112,91 @@ st.markdown(
         border-radius: 4px;
         color: #102a43;
     }
+    @media (max-width: 600px) {
+        .block-container { padding: .85rem .65rem 1rem .65rem; }
+        .option-row, .api-key-label, .api-key-help, .mode-note, .source-badge { font-size: .82rem; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+def render_app_header() -> None:
+    header_html = """
+    <!DOCTYPE html>
+    <html lang="zh-Hant">
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        html, body {
+          margin: 0;
+          padding: 0;
+          width: 100%;
+          background: transparent;
+          overflow: hidden;
+          font-family: "Microsoft JhengHei", "Noto Sans TC", "PingFang TC", Arial, sans-serif;
+        }
+        .header {
+          width: 100%;
+          height: 82px;
+          box-sizing: border-box;
+          padding: 0 22px;
+          display: flex;
+          align-items: center;
+          gap: 18px;
+          color: #ffffff;
+          background: #17384d;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        .title {
+          margin: 0;
+          padding: 0;
+          font-size: 29px;
+          font-weight: 800;
+          line-height: 1.35;
+          white-space: nowrap;
+        }
+        .subtitle {
+          margin: 0;
+          padding: 0;
+          font-size: 15px;
+          font-weight: 600;
+          line-height: 1.35;
+          color: rgba(255, 255, 255, 0.82);
+          white-space: nowrap;
+        }
+        @media (max-width: 600px) {
+          .header {
+            height: 88px;
+            padding: 10px 15px;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 1px;
+          }
+          .title {
+            font-size: 23px;
+            line-height: 1.35;
+            white-space: normal;
+          }
+          .subtitle {
+            font-size: 13px;
+            line-height: 1.35;
+            white-space: normal;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div class="title">2倍大盤動能計算</div>
+        <div class="subtitle">月頻雙動能輪動策略</div>
+      </div>
+    </body>
+    </html>
+    """
+    components_html(header_html, height=92, scrolling=False)
 
 
 def configured_password() -> str:
@@ -202,7 +311,7 @@ def render_signal(result: core.WorkflowResult) -> None:
             <div class="score-line">{score_prefix}｜QQQ {latest.qqq_score:.2%} / TLT {latest.tlt_score:.2%}</div>
             <div class="muted-line">來源：{result.source_summary}</div>
             <div class="muted-line">{month_label}：{months[0]} 對比 {months[1]} / {months[2]} / {months[3]}</div>
-            <div class="muted-line">{result.log_path}</div>
+            <div class="muted-line">紀錄來源：正式策略紀錄</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -284,27 +393,38 @@ def main() -> None:
     if "page" not in st.session_state:
         st.session_state.page = "首頁"
 
-    st.markdown('<div class="topbar"><div class="top-title">2倍大盤動能計算</div></div>', unsafe_allow_html=True)
+    render_app_header()
 
-    nav_cols = st.columns([4.8, 1, 1, .75, .9], gap="small")
-    with nav_cols[1]:
-        formal_clicked = st.button("正式計算", use_container_width=True)
-    with nav_cols[2]:
-        preview_clicked = st.button("月底預估", use_container_width=True)
-    with nav_cols[3]:
-        if st.button("首頁", use_container_width=True):
-            st.session_state.page = "首頁"
-    with nav_cols[4]:
-        if st.button("使用說明", use_container_width=True):
-            st.session_state.page = "使用說明"
-
-    option_cols = st.columns([1.1, 1.6, 4.5], gap="small")
-    with option_cols[0]:
-        st.markdown('<div class="option-row"><b>資料來源：Yahoo</b></div>', unsafe_allow_html=True)
-    with option_cols[1]:
-        st.text_input("Alpha Key（備援/後台比對）", type="password", key="alpha_key", label_visibility="collapsed")
-    with option_cols[2]:
-        st.markdown('<div class="option-row"><b style="color:#2563eb;">正式計算只用完成月 K；月底預估使用本月目前價格</b></div>', unsafe_allow_html=True)
+    control_cols = st.columns([0.42, 0.58], gap="medium")
+    with control_cols[0]:
+        st.markdown(
+            """
+            <div class="api-key-label">Alpha Vantage API Key</div>
+            <div class="api-key-help">用於取得第三方調整後價格，並與 Yahoo Finance 交叉驗證。</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.text_input(
+            "Alpha Vantage API Key",
+            type="password",
+            key="alpha_key",
+            placeholder="請輸入 Alpha Vantage API Key",
+            label_visibility="collapsed",
+        )
+        st.markdown('<div class="source-badge">主要資料來源：Yahoo Finance</div>', unsafe_allow_html=True)
+    with control_cols[1]:
+        nav_cols = st.columns(4, gap="small")
+        with nav_cols[0]:
+            formal_clicked = st.button("正式計算", use_container_width=True)
+        with nav_cols[1]:
+            preview_clicked = st.button("月底預估", use_container_width=True)
+        with nav_cols[2]:
+            if st.button("首頁", use_container_width=True):
+                st.session_state.page = "首頁"
+        with nav_cols[3]:
+            if st.button("使用說明", use_container_width=True):
+                st.session_state.page = "使用說明"
+        st.markdown('<div class="mode-note">正式計算只使用完成月 K；月底預估使用本月目前價格</div>', unsafe_allow_html=True)
 
     if formal_clicked or preview_clicked:
         st.session_state.page = "首頁"
@@ -358,7 +478,7 @@ def main() -> None:
     if st.session_state.get("run_error"):
         st.warning(f"本次線上取價未完成，畫面保留既有資料：{st.session_state.run_error}")
 
-    top_left, top_right = st.columns([1.08, 1], gap="small")
+    top_left, top_right = st.columns([LEFT_RATIO, RIGHT_RATIO], gap="small")
     with top_left:
         st.markdown('<div class="section-title">最新訊號</div>', unsafe_allow_html=True)
         render_signal(result)
@@ -366,7 +486,7 @@ def main() -> None:
         st.markdown('<div class="section-title">檢查項目</div>', unsafe_allow_html=True)
         st.dataframe(style_checks(checks_df(result)), hide_index=True, use_container_width=True, height=205)
 
-    bottom_left, bottom_right = st.columns([.92, 1.08], gap="small")
+    bottom_left, bottom_right = st.columns([LEFT_RATIO, RIGHT_RATIO], gap="small")
     with bottom_left:
         st.markdown('<div class="section-title">資料檢查</div>', unsafe_allow_html=True)
         st.dataframe(stats_df(result), hide_index=True, use_container_width=True, height=115)
