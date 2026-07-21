@@ -13,7 +13,7 @@ RIGHT_RATIO = 0.53
 
 
 st.set_page_config(
-    page_title="2倍大盤動能計算",
+    page_title="X倍大盤動能計算",
     page_icon="2X",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -190,7 +190,7 @@ def render_app_header() -> None:
     </head>
     <body>
       <div class="header">
-        <div class="title">2倍大盤動能計算</div>
+        <div class="title">X倍大盤動能計算</div>
         <div class="subtitle">月頻雙動能輪動策略</div>
       </div>
     </body>
@@ -212,7 +212,7 @@ def require_password() -> bool:
         return True
     if st.session_state.get("auth_ok"):
         return True
-    st.title("2倍大盤動能計算")
+    st.title("X倍大盤動能計算")
     entered = st.text_input("請輸入密碼", type="password")
     if st.button("進入"):
         if entered == password:
