@@ -89,6 +89,9 @@ class WorkflowResult:
     alpha_prices: dict[str, dict[str, float]]
     checks: list["CheckItem"]
     is_preview: bool = False
+    is_waiting_formal: bool = False
+    formal_base_month: str = ""
+    formal_execute_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,13 @@ class CheckItem:
     status: str
     item: str
     detail: str
+
+
+@dataclass(frozen=True)
+class FormalCycle:
+    base_month: str
+    execute_date: str
+    is_ready: bool
 
 
 def ensure_dirs() -> None:
@@ -201,6 +211,26 @@ def latest_formal_execute_date(today: date | None = None) -> str:
 def keep_formal_rows(rows: list[SignalRow], today: date | None = None) -> list[SignalRow]:
     latest_allowed = latest_formal_execute_date(today)
     return [row for row in rows if row.execute_date <= latest_allowed]
+
+
+def next_formal_cycle(rows: list[SignalRow], today: date | None = None) -> FormalCycle:
+    """Find the next unrecorded formal month from the existing signal history."""
+    today = today or date.today()
+    formal_rows = keep_formal_rows(rows, today)
+    if formal_rows:
+        last_execute_month = max(row.execute_date for row in formal_rows)[:7]
+        last_base_month = add_months(last_execute_month, -1)
+        base_month = add_months(last_base_month, 1)
+    else:
+        base_month = latest_completed_month(today)
+
+    year, month = map(int, base_month.split("-"))
+    next_month_start = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return FormalCycle(
+        base_month=base_month,
+        execute_date=first_trading_day_after_month(base_month).isoformat(),
+        is_ready=today >= next_month_start,
+    )
 
 
 def filter_prices_through(prices: dict[str, float], cutoff_month: str) -> dict[str, float]:
@@ -383,9 +413,9 @@ def fetch_monthly_adjusted(symbol: str, source: str, start: date, end: date, api
     return fetch_yahoo_monthly_adjusted(symbol, start, end)
 
 
-def update_prices(symbol: str, start_month: str, include_current_month: bool, source: str = SOURCE_YAHOO, api_key: str = "") -> dict[str, float]:
+def update_prices(symbol: str, start_month: str, include_current_month: bool, source: str = SOURCE_YAHOO, api_key: str = "", required_month: str | None = None) -> dict[str, float]:
     cached = read_cached_prices(symbol, source)
-    cutoff = month_key(date.today()) if include_current_month else latest_completed_month()
+    cutoff = required_month or (month_key(date.today()) if include_current_month else latest_completed_month())
     if cutoff in cached and cache_is_fresh(symbol, source):
         FETCH_EVENTS[(symbol.upper(), source)] = "cache"
         return filter_prices_through(cached, cutoff)
@@ -403,11 +433,12 @@ def update_prices(symbol: str, start_month: str, include_current_month: bool, so
     return merged
 
 
-def update_prices_with_backup(symbol: str, start_month: str, include_current_month: bool, api_key: str = "") -> tuple[dict[str, float], str, str | None]:
+def update_prices_with_backup(symbol: str, start_month: str, include_current_month: bool, api_key: str = "", required_month: str | None = None) -> tuple[dict[str, float], str, str | None]:
+    required_kwargs = {"required_month": required_month} if required_month else {}
     try:
-        return update_prices(symbol, start_month, include_current_month, SOURCE_YAHOO), SOURCE_YAHOO, None
+        return update_prices(symbol, start_month, include_current_month, SOURCE_YAHOO, **required_kwargs), SOURCE_YAHOO, None
     except Exception as exc:
-        cutoff = month_key(date.today()) if include_current_month else latest_completed_month()
+        cutoff = required_month or (month_key(date.today()) if include_current_month else latest_completed_month())
         cached = read_cached_prices(symbol, SOURCE_YAHOO)
         if cutoff in cached:
             FETCH_EVENTS[(symbol.upper(), SOURCE_YAHOO)] = "offline_cache"
@@ -418,7 +449,7 @@ def update_prices_with_backup(symbol: str, start_month: str, include_current_mon
             )
         if not api_key.strip():
             raise
-        fallback_prices = update_prices(symbol, start_month, include_current_month, SOURCE_ALPHA, api_key)
+        fallback_prices = update_prices(symbol, start_month, include_current_month, SOURCE_ALPHA, api_key, **required_kwargs)
         return fallback_prices, SOURCE_ALPHA, f"{symbol}: Yahoo 抓價失敗，已改用 Alpha Vantage 備援。原因: {exc}"
 
 
@@ -642,21 +673,61 @@ def price_compare_threshold(symbol: str, yahoo_prices: dict[str, float], alpha_p
     return max(0.005, percentile(diffs, 0.95) * 1.2)
 
 
-def run_workflow(start_month: str, include_current_month: bool, source: str = SOURCE_YAHOO_ALPHA_BACKUP, api_key: str = "") -> WorkflowResult:
+def waiting_formal_result(start_month: str, cycle: FormalCycle, today: date) -> WorkflowResult:
+    rows = keep_formal_rows(read_signal_log(), today)
+    prices = {
+        symbol: filter_prices_through(read_cached_prices(symbol, SOURCE_YAHOO), cycle.base_month)
+        for symbol in SIGNAL_SYMBOLS
+    }
+    used_sources = {symbol: SOURCE_YAHOO for symbol in SIGNAL_SYMBOLS}
+    stats = [build_price_stats(symbol, SOURCE_YAHOO, prices[symbol], "") for symbol in SIGNAL_SYMBOLS]
+    checks = [
+        CheckItem("SKIP", "正式計算時程", f"尚未到正式計算時間，等待 {cycle.base_month} 月完成；下次正式訊號為 {cycle.execute_date}。"),
+        CheckItem("SKIP", "抓價與備援", "本期尚未開放，不進行線上抓價或 Alpha 備援。"),
+        CheckItem("SKIP", "動能公式計算", "本期尚未開放，未執行動能計算。"),
+        CheckItem("SKIP", "紀錄寫入", "本期尚未開放，不寫入 signals.csv。"),
+    ]
+    return WorkflowResult(
+        rows=rows,
+        log_path=f"等待 {cycle.base_month} 月完成後正式計算",
+        source_summary="QQQ:yahoo/TLT:yahoo",
+        used_sources=used_sources,
+        warnings=[],
+        stats=stats,
+        prices=prices,
+        alpha_prices={},
+        checks=checks,
+        is_waiting_formal=True,
+        formal_base_month=cycle.base_month,
+        formal_execute_date=cycle.execute_date,
+    )
+
+
+def run_workflow(start_month: str, include_current_month: bool, source: str = SOURCE_YAHOO_ALPHA_BACKUP, api_key: str = "", today: date | None = None) -> WorkflowResult:
     ensure_dirs()
     FETCH_EVENTS.clear()
     is_preview = include_current_month
+    today = today or date.today()
+    formal_cycle: FormalCycle | None = None
+    required_month: str | None = None
+    if not is_preview:
+        formal_cycle = next_formal_cycle(read_signal_log(), today)
+        if read_signal_log() and not formal_cycle.is_ready:
+            return waiting_formal_result(start_month, formal_cycle, today)
+        required_month = formal_cycle.base_month
     prices: dict[str, dict[str, float]] = {}
     used_sources: dict[str, str] = {}
     warnings: list[str] = []
     checks: list[CheckItem] = []
     for symbol in SIGNAL_SYMBOLS:
         if source == SOURCE_YAHOO_ALPHA_BACKUP:
-            symbol_prices, used_source, warning = update_prices_with_backup(symbol, start_month, include_current_month, api_key)
+            symbol_prices, used_source, warning = update_prices_with_backup(
+                symbol, start_month, include_current_month, api_key, required_month
+            )
             if warning:
                 warnings.append(warning)
         else:
-            symbol_prices = update_prices(symbol, start_month, include_current_month, source, api_key)
+            symbol_prices = update_prices(symbol, start_month, include_current_month, source, api_key, required_month)
             used_source = source
         prices[symbol] = symbol_prices
         used_sources[symbol] = used_source
@@ -703,7 +774,7 @@ def run_workflow(start_month: str, include_current_month: bool, source: str = SO
         build_price_stats(symbol, used_sources[symbol], prices[symbol], compare_results.get(symbol, ""))
         for symbol in SIGNAL_SYMBOLS
     ]
-    expected_latest = month_key(date.today()) if is_preview else latest_completed_month()
+    expected_latest = month_key(today) if is_preview else required_month or latest_completed_month(today)
     for stat in stats:
         if stat.latest_month and stat.latest_month < expected_latest:
             warnings.append(f"{stat.symbol}: 最新資料只到 {stat.latest_month}，目標最新月為 {expected_latest}。")
@@ -717,7 +788,10 @@ def run_workflow(start_month: str, include_current_month: bool, source: str = SO
         else:
             checks.append(CheckItem("OK", f"{stat.symbol} 缺月份", f"{RAW_DISPLAY_START_MONTH} 以後未偵測缺月份。"))
     log_path = "月底預估模式未寫入正式紀錄" if is_preview else str(SIGNAL_LOG)
-    return WorkflowResult(rows, log_path, source_summary, used_sources, warnings, stats, prices, alpha_prices, checks, is_preview)
+    return WorkflowResult(
+        rows, log_path, source_summary, used_sources, warnings, stats, prices, alpha_prices, checks, is_preview,
+        False, formal_cycle.base_month if formal_cycle else "", formal_cycle.execute_date if formal_cycle else "",
+    )
 
 
 class TwoXMarketApp:
@@ -736,6 +810,8 @@ class TwoXMarketApp:
         self.include_current = IntVar(value=0)
         self.alpha_key = StringVar(value="")
         self.warning_text = StringVar(value="尚無異常提醒。")
+        self.signal_date_label: Label | None = None
+        self.signal_heading_label: Label | None = None
         self.signal_change_label: Label | None = None
         self.signal_target_label: Label | None = None
         self.current_prices: dict[str, dict[str, float]] = {}
@@ -818,8 +894,10 @@ class TwoXMarketApp:
         signal_outer.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 8))
         signal_head = Frame(signal_box, bg="#ffffff")
         signal_head.pack(fill=X, padx=12, pady=(10, 4))
-        Label(signal_head, textvariable=self.signal_date, bg="#ffffff", fg="#486581", font=("Microsoft JhengHei UI", 13, "bold"), anchor="w").pack(side=LEFT)
-        Label(signal_head, textvariable=self.signal_heading, bg="#ffffff", fg="#102a43", font=("Microsoft JhengHei UI", 17, "bold")).pack(side=LEFT, padx=(16, 0))
+        self.signal_date_label = Label(signal_head, textvariable=self.signal_date, bg="#ffffff", fg="#486581", font=("Microsoft JhengHei UI", 13, "bold"), anchor="w", padx=4, pady=2)
+        self.signal_date_label.pack(side=LEFT)
+        self.signal_heading_label = Label(signal_head, textvariable=self.signal_heading, bg="#ffffff", fg="#102a43", font=("Microsoft JhengHei UI", 17, "bold"), padx=4, pady=3)
+        self.signal_heading_label.pack(side=LEFT, padx=(16, 0))
         self.signal_target_label = Label(signal_head, textvariable=self.signal_target, bg="#ffffff", fg="#0b6b3a", font=("Microsoft JhengHei UI", 24, "bold"))
         self.signal_target_label.pack(side=LEFT)
         self.signal_change_label = Label(signal_head, textvariable=self.signal_change, bg="#dbeafe", fg="#1d4ed8", font=("Microsoft JhengHei UI", 20, "bold"), padx=12, pady=3)
@@ -1101,7 +1179,7 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
         self.signal_date.set(latest.execute_date)
         self.signal_heading.set("建議標的：")
         self.signal_target.set(latest.target)
-        self.apply_signal_target_style(False)
+        self.apply_signal_state_style("normal")
         self.signal_change.set("需要換倉" if latest.changed else "不用換倉")
         self.apply_signal_change_style(latest.changed)
         self.signal_scores.set(f"上次計算結果｜QQQ {latest.qqq_score:.2%} / TLT {latest.tlt_score:.2%}")
@@ -1131,8 +1209,13 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
         mode_text = "月底預估" if preview else "正式計算"
         has_alpha_key = bool(self.alpha_key.get().strip())
         alpha_detail = "Alpha Vantage 也無法取得必要資料。" if has_alpha_key else "未輸入 Alpha Key，無法啟用 Alpha Vantage 備援。"
-        required_month = month_key(date.today()) if preview else latest_completed_month()
-        required_execute_date = first_trading_day_after_month(required_month).isoformat()
+        if preview:
+            required_month = month_key(date.today())
+            required_execute_date = first_trading_day_after_month(required_month).isoformat()
+        else:
+            cycle = next_formal_cycle(read_signal_log(), date.today())
+            required_month = cycle.base_month
+            required_execute_date = cycle.execute_date
         logged_dates = {row.execute_date for row in read_signal_log()}
         log_detail = (
             f"signals.csv 已有 {required_execute_date} 的正式紀錄。"
@@ -1143,14 +1226,16 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
             f"Yahoo 線上抓價失敗，且本地快取缺少本次所需月份；{alpha_detail} "
             f"本期需要 {required_month} 月價格，對應執行日 {required_execute_date}；{log_detail} 原因：{error}"
         )
-        self.signal_date.set("價格抓價異常")
+        self.signal_date.set("本次正式計算未完成" if not preview else "本次月底預估未完成")
         self.signal_heading.set("價格抓價異常：")
         self.signal_target.set("無法判斷動能")
-        self.apply_signal_target_style(True)
+        self.apply_signal_state_style("failed")
         self.signal_change.set("")
         self.signal_scores.set("本次未執行動能計算")
         self.detail.set(f"{mode_text}需要 {required_month} 月價格；資料不足，不使用舊月份訊號。")
         self.apply_signal_change_style(False)
+        if self.signal_change_label is not None:
+            self.signal_change_label.configure(bg="#ffffff", fg="#ffffff")
         self.status.set(f"{mode_text}未完成：無可用價格資料，未執行公式計算或寫入紀錄。")
         self.render_checks([
             CheckItem("FAIL", "抓價與備援", failure_detail),
@@ -1160,6 +1245,26 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
 
     def render(self, result: WorkflowResult) -> None:
         rows = result.rows
+        if result.is_waiting_formal:
+            self.current_prices = result.prices
+            self.current_alpha_prices = {}
+            self.current_sources = result.used_sources
+            self.signal_date.set("尚未到正式計算時間")
+            self.signal_heading.set("正式計算：")
+            self.signal_target.set(f"等待 {result.formal_base_month} 月完成")
+            self.signal_change.set("")
+            self.signal_scores.set(f"下次正式訊號：{result.formal_execute_date}")
+            self.detail.set("依 signals.csv 的最後正式紀錄推算；本次不抓價、不計算、不寫入紀錄。")
+            self.status.set(result.log_path)
+            self.apply_signal_state_style("waiting")
+            if self.signal_change_label is not None:
+                self.signal_change_label.configure(bg="#ffffff", fg="#ffffff")
+            self.render_checks(result.checks)
+            self.render_cached_stats()
+            if rows:
+                self.render_price_usage(rows)
+                self.render_history(rows)
+            return
         latest = rows[-1]
         changed_text = "需要換倉" if latest.changed else "不用換倉"
         _, months = latest_price_context(rows)
@@ -1169,7 +1274,7 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
         self.signal_date.set(latest.execute_date)
         self.signal_heading.set("建議標的：")
         self.signal_target.set(latest.target)
-        self.apply_signal_target_style(False)
+        self.apply_signal_state_style("normal")
         self.signal_change.set(changed_text)
         self.apply_signal_change_style(latest.changed)
         prefix = "預估計算結果" if result.is_preview else "計算結果"
@@ -1205,10 +1310,19 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
         else:
             self.signal_change_label.configure(bg="#dbeafe", fg="#1d4ed8")
 
-    def apply_signal_target_style(self, failed: bool) -> None:
-        if self.signal_target_label is None:
-            return
-        self.signal_target_label.configure(fg="#b91c1c" if failed else "#0b6b3a")
+    def apply_signal_state_style(self, state: str) -> None:
+        styles = {
+            "normal": ("#ffffff", "#486581", "#ffffff", "#102a43", "#ffffff", "#0b6b3a"),
+            "waiting": ("#fef3c7", "#92400e", "#fef3c7", "#92400e", "#fef3c7", "#92400e"),
+            "failed": ("#fee2e2", "#b91c1c", "#fee2e2", "#b91c1c", "#fee2e2", "#b91c1c"),
+        }
+        date_bg, date_fg, heading_bg, heading_fg, target_bg, target_fg = styles[state]
+        if self.signal_date_label is not None:
+            self.signal_date_label.configure(bg=date_bg, fg=date_fg)
+        if self.signal_heading_label is not None:
+            self.signal_heading_label.configure(bg=heading_bg, fg=heading_fg)
+        if self.signal_target_label is not None:
+            self.signal_target_label.configure(bg=target_bg, fg=target_fg)
 
     def render_cached_stats(self) -> None:
         self.stats_table.delete(*self.stats_table.get_children())

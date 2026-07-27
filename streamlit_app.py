@@ -309,6 +309,22 @@ def card_class(status: str) -> str:
 
 
 def render_signal(result: core.WorkflowResult) -> None:
+    if result.is_waiting_formal:
+        st.markdown(
+            f"""
+            <div class="signal-box">
+                <div class="signal-date" style="display:inline-block;background:#fef3c7;color:#92400e;padding:0.2rem 0.45rem;">尚未到正式計算時間</div>
+                <div>
+                    <span style="font-size:1.25rem;font-weight:800;color:#92400e;background:#fef3c7;padding:0.2rem 0.45rem;">正式計算：</span>
+                    <span style="font-size:1.7rem;font-weight:800;color:#92400e;background:#fef3c7;padding:0.2rem 0.45rem;">等待 {result.formal_base_month} 月完成</span>
+                </div>
+                <div class="score-line">下次正式訊號：{result.formal_execute_date}</div>
+                <div class="muted-line">依 signals.csv 的最後正式紀錄推算；本次不抓價、不計算、不寫入紀錄。</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
     latest = result.rows[-1]
     _, months = core.latest_price_context(result.rows)
     if result.is_preview:
@@ -391,8 +407,13 @@ def run(mode: str, alpha_key: str) -> None:
 def fetch_failure_checks(alpha_key: str, error: str) -> list[core.CheckItem]:
     alpha_detail = "Alpha Vantage 也無法取得必要資料。" if alpha_key.strip() else "未輸入 Alpha Key，無法啟用 Alpha Vantage 備援。"
     preview = st.session_state.get("last_mode") == "preview"
-    required_month = core.month_key(date.today()) if preview else core.latest_completed_month()
-    required_execute_date = core.first_trading_day_after_month(required_month).isoformat()
+    if preview:
+        required_month = core.month_key(date.today())
+        required_execute_date = core.first_trading_day_after_month(required_month).isoformat()
+    else:
+        cycle = core.next_formal_cycle(core.read_signal_log(), date.today())
+        required_month = cycle.base_month
+        required_execute_date = cycle.execute_date
     logged_dates = {row.execute_date for row in core.read_signal_log()}
     log_detail = (
         f"signals.csv 已有 {required_execute_date} 的正式紀錄。"
