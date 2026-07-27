@@ -309,7 +309,9 @@ def card_class(status: str) -> str:
 
 
 def render_signal(result: core.WorkflowResult) -> None:
-    if result.is_waiting_formal:
+    # A Streamlit session can retain a result object created before a deployment.
+    # Treat that older shape as a normal completed result instead of crashing.
+    if getattr(result, "is_waiting_formal", False):
         st.markdown(
             f"""
             <div class="signal-box">
