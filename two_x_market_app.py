@@ -32,6 +32,10 @@ SOURCE_YAHOO = "yahoo"
 SOURCE_ALPHA = "alpha"
 SOURCE_YAHOO_ALPHA_BACKUP = "yahoo_alpha_backup"
 CACHE_REFRESH_SECONDS = 300
+# A disconnected network can otherwise hold the UI for several minutes while each
+# provider and symbol retries. The user can retry manually after connectivity returns.
+NETWORK_TIMEOUT_SECONDS = 8
+NETWORK_FETCH_ATTEMPTS = 1
 FETCH_EVENTS: dict[tuple[str, str], str] = {}
 MONTH_ABBR = {
     "jan": "01",
@@ -317,7 +321,12 @@ def yahoo_chart_url(symbol: str, start: date, end: date) -> str:
     return f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?{urllib.parse.urlencode(params)}"
 
 
-def fetch_yahoo_monthly_adjusted(symbol: str, start: date, end: date, retries: int = 3) -> dict[str, float]:
+def fetch_yahoo_monthly_adjusted(
+    symbol: str,
+    start: date,
+    end: date,
+    retries: int = NETWORK_FETCH_ATTEMPTS,
+) -> dict[str, float]:
     url = yahoo_chart_url(symbol, start, end)
     last_error: Exception | None = None
 
@@ -330,7 +339,7 @@ def fetch_yahoo_monthly_adjusted(symbol: str, start: date, end: date, retries: i
                     "Accept": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
 
             result = payload["chart"]["result"][0]
@@ -361,7 +370,11 @@ def alpha_vantage_url(symbol: str, api_key: str) -> str:
     return f"https://www.alphavantage.co/query?{urllib.parse.urlencode(params)}"
 
 
-def fetch_alpha_monthly_adjusted(symbol: str, api_key: str, retries: int = 3) -> dict[str, float]:
+def fetch_alpha_monthly_adjusted(
+    symbol: str,
+    api_key: str,
+    retries: int = NETWORK_FETCH_ATTEMPTS,
+) -> dict[str, float]:
     if not api_key.strip():
         raise RuntimeError("Alpha Vantage source needs an API key.")
 
@@ -377,7 +390,7 @@ def fetch_alpha_monthly_adjusted(symbol: str, api_key: str, retries: int = 3) ->
                     "Accept": "text/csv,application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
                 text = resp.read().decode("utf-8-sig")
 
             if text.lstrip().startswith("{"):
@@ -533,6 +546,17 @@ def parse_percent(value: str) -> float:
     return float(value.strip().replace("%", "")) / 100
 
 
+def normalize_signal_date(value: str) -> str:
+    """Accept both legacy YYYY/M/D logs and the current ISO date format."""
+    text = (value or "").strip()
+    for pattern in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, pattern).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid signal date: {value}")
+
+
 def read_signal_log() -> list[SignalRow]:
     if not SIGNAL_LOG.exists():
         return []
@@ -543,7 +567,7 @@ def read_signal_log() -> list[SignalRow]:
             try:
                 rows.append(
                     SignalRow(
-                        execute_date=row["execute_date"],
+                        execute_date=normalize_signal_date(row["execute_date"]),
                         qqq_score=parse_percent(row["qqq_score"]),
                         tlt_score=parse_percent(row["tlt_score"]),
                         combo=row["combo"],
