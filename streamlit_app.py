@@ -167,12 +167,12 @@ def render_app_header() -> None:
           white-space: nowrap;
         }
         .disclaimer {
-          margin-left: auto;
+          margin-left: 42px;
           color: #fde68a;
-          font-size: 16px;
+          font-size: 20px;
           font-weight: 800;
           line-height: 1.35;
-          text-align: right;
+          text-align: left;
           white-space: nowrap;
         }
         @media (max-width: 600px) {
@@ -196,7 +196,7 @@ def render_app_header() -> None:
           }
           .disclaimer {
             margin-left: 0;
-            font-size: 16px;
+            font-size: 20px;
             text-align: left;
             white-space: normal;
           }
@@ -207,7 +207,7 @@ def render_app_header() -> None:
       <div class="header">
         <div class="title">X倍大盤動能計算</div>
         <div class="subtitle">月頻雙動能輪動策略</div>
-        <div class="disclaimer">本工具是投資輔助計算工具，不是投資建議</div>
+        <div class="disclaimer">⚠ 本工具是投資輔助計算工具，不是投資建議 ⚠</div>
       </div>
     </body>
     </html>
