@@ -311,11 +311,16 @@ def card_class(status: str) -> str:
 def render_signal(result: core.WorkflowResult) -> None:
     latest = result.rows[-1]
     _, months = core.latest_price_context(result.rows)
-    date_text = f"月底預估 {latest.execute_date}" if result.is_preview else latest.execute_date
+    if result.is_preview:
+        date_text = f"月底預估 {latest.execute_date}"
+    elif result.is_stale_formal:
+        date_text = f"資料落後快取回算 {latest.execute_date}"
+    else:
+        date_text = latest.execute_date
     change_text = "需要換倉" if latest.changed else "不用換倉"
     change_class = "change-yes" if latest.changed else "change-no"
-    score_prefix = "預估計算結果" if result.is_preview else "計算結果"
-    month_label = "預估基準月" if result.is_preview else "計算月份"
+    score_prefix = "預估計算結果" if result.is_preview else ("資料落後快取結果" if result.is_stale_formal else "計算結果")
+    month_label = "預估基準月" if result.is_preview else ("快取可用月份" if result.is_stale_formal else "計算月份")
     st.markdown(
         f"""
         <div class="signal-box">

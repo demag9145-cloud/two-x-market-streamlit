@@ -89,6 +89,7 @@ class WorkflowResult:
     alpha_prices: dict[str, dict[str, float]]
     checks: list["CheckItem"]
     is_preview: bool = False
+    is_stale_formal: bool = False
 
 
 @dataclass(frozen=True)
@@ -416,6 +417,15 @@ def update_prices_with_backup(symbol: str, start_month: str, include_current_mon
                 SOURCE_YAHOO,
                 f"{symbol}: Yahoo 線上取價失敗，已改用本地快取資料計算。原因: {exc}",
             )
+        if not include_current_month and cached:
+            available_month = max(cached)
+            FETCH_EVENTS[(symbol.upper(), SOURCE_YAHOO)] = "stale_cache"
+            return (
+                filter_prices_through(cached, available_month),
+                SOURCE_YAHOO,
+                f"{symbol}: Yahoo 線上取價失敗，本地快取只到 {available_month}，"
+                f"無法取得目標完成月 {cutoff}。將以可用快取回算，但不寫入正式紀錄。原因: {exc}",
+            )
         if not api_key.strip():
             raise
         fallback_prices = update_prices(symbol, start_month, include_current_month, SOURCE_ALPHA, api_key)
@@ -667,6 +677,9 @@ def run_workflow(start_month: str, include_current_month: bool, source: str = SO
         elif fetch_mode == "offline_cache":
             fetch_detail = "Yahoo 線上取價失敗，改用本地快取資料計算。"
             fetch_status = "SKIP"
+        elif fetch_mode == "stale_cache":
+            fetch_detail = "Yahoo 線上取價失敗，快取未達本期完成月；以舊快取回算且不寫入正式紀錄。"
+            fetch_status = "FAIL"
         else:
             fetch_detail = "已線上重新取價並更新本地快取。"
             fetch_status = "OK"
@@ -678,8 +691,20 @@ def run_workflow(start_month: str, include_current_month: bool, source: str = SO
         raise RuntimeError("資料不足，無法計算訊號。請把起始月份往前調，或稍後再更新。")
     checks.append(CheckItem("OK", "動能公式計算", f"已產生 {len(rows)} 筆訊號。"))
     source_summary = "/".join(f"{symbol}:{used_sources[symbol]}" for symbol in SIGNAL_SYMBOLS)
+    is_stale_formal = not is_preview and any(
+        FETCH_EVENTS.get((symbol, SOURCE_YAHOO)) == "stale_cache" for symbol in SIGNAL_SYMBOLS
+    )
     if is_preview:
         checks.append(CheckItem("SKIP", "正式紀錄寫入", "月底預估模式不寫入正式 signals.csv。"))
+    elif is_stale_formal:
+        latest_available = rows[-1].execute_date[:7]
+        checks.append(
+            CheckItem(
+                "SKIP",
+                "紀錄寫入",
+                f"資料落後快取回算至 {latest_available}；本次不覆寫 signals.csv，保留上次正式紀錄。",
+            )
+        )
     else:
         write_signal_log(rows, source_summary)
         checks.append(CheckItem("OK", "紀錄寫入", str(SIGNAL_LOG)))
@@ -716,14 +741,22 @@ def run_workflow(start_month: str, include_current_month: bool, source: str = SO
             checks.append(CheckItem("FAIL", f"{stat.symbol} 缺月份", ", ".join(stat.missing_months)))
         else:
             checks.append(CheckItem("OK", f"{stat.symbol} 缺月份", f"{RAW_DISPLAY_START_MONTH} 以後未偵測缺月份。"))
-    log_path = "月底預估模式未寫入正式紀錄" if is_preview else str(SIGNAL_LOG)
-    return WorkflowResult(rows, log_path, source_summary, used_sources, warnings, stats, prices, alpha_prices, checks, is_preview)
+    if is_preview:
+        log_path = "月底預估模式未寫入正式紀錄"
+    elif is_stale_formal:
+        log_path = "資料落後快取回算，未寫入正式紀錄"
+    else:
+        log_path = str(SIGNAL_LOG)
+    return WorkflowResult(
+        rows, log_path, source_summary, used_sources, warnings, stats, prices, alpha_prices, checks,
+        is_preview, is_stale_formal,
+    )
 
 
 class TwoXMarketApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("2倍大盤動能計算")
+        self.root.title("X倍大盤動能計算")
         self._set_initial_window()
 
         self.status = StringVar(value="尚未更新")
@@ -781,8 +814,15 @@ class TwoXMarketApp:
         top = Frame(self.root, padx=18, pady=14, bg="#17384d")
         top.pack(fill=X)
 
-        title = Label(top, text="2倍大盤動能計算", bg="#17384d", fg="#ffffff", font=("Microsoft JhengHei UI", 18, "bold"))
+        title = Label(top, text="X倍大盤動能計算", bg="#17384d", fg="#ffffff", font=("Microsoft JhengHei UI", 18, "bold"))
         title.pack(side=LEFT)
+        Label(
+            top,
+            text="⚠ 本工具是投資輔助計算工具，不是投資建議 ⚠",
+            bg="#17384d",
+            fg="#fde68a",
+            font=("Microsoft JhengHei UI", 12, "bold"),
+        ).pack(side=LEFT, padx=(28, 0))
 
         Button(top, text="使用說明", command=self.show_help, width=10).pack(side=RIGHT, padx=(8, 0))
         Button(top, text="首頁", command=self.show_home, width=8).pack(side=RIGHT, padx=(8, 0))
@@ -1138,15 +1178,15 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
         self.current_prices = result.prices
         self.current_alpha_prices = result.alpha_prices
         self.current_sources = result.used_sources
-        self.signal_date.set(latest.execute_date)
+        self.signal_date.set(f"資料落後快取回算 {latest.execute_date}" if result.is_stale_formal else latest.execute_date)
         self.signal_target.set(latest.target)
         self.signal_change.set(changed_text)
         self.apply_signal_change_style(latest.changed)
-        prefix = "預估計算結果" if result.is_preview else "計算結果"
+        prefix = "預估計算結果" if result.is_preview else ("資料落後快取結果" if result.is_stale_formal else "計算結果")
         self.signal_scores.set(f"{prefix}｜QQQ {latest.qqq_score:.2%} / TLT {latest.tlt_score:.2%}")
-        month_label = "預估基準月" if result.is_preview else "計算月份"
+        month_label = "預估基準月" if result.is_preview else ("快取可用月份" if result.is_stale_formal else "計算月份")
         self.detail.set(f"來源：{result.source_summary}｜{month_label}：{months[0]} 對比 {months[1]} / {months[2]} / {months[3]}")
-        status_prefix = "預估完成" if result.is_preview else "完成"
+        status_prefix = "預估完成" if result.is_preview else ("資料落後快取回算完成" if result.is_stale_formal else "完成")
         self.status.set(f"{status_prefix}，{result.log_path}")
         if result.warnings:
             pass
