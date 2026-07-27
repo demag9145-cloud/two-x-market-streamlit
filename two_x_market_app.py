@@ -1113,7 +1113,22 @@ Yahoo缺資料：Yahoo 沒有該月份價格，該列會變紅色底色，不能
             result = run_workflow(SIGNAL_START_MONTH, preview, SOURCE_YAHOO_ALPHA_BACKUP, self.alpha_key.get())
             self.root.after(0, lambda: self.render(result))
         except Exception as exc:
-            self.root.after(0, lambda: self.status.set(str(exc)))
+            self.root.after(0, lambda: self.render_fetch_failure(preview, str(exc)))
+
+    def render_fetch_failure(self, preview: bool, error: str) -> None:
+        mode_text = "月底預估" if preview else "正式計算"
+        has_alpha_key = bool(self.alpha_key.get().strip())
+        alpha_detail = "Alpha Vantage 也無法取得必要資料。" if has_alpha_key else "未輸入 Alpha Key，無法啟用 Alpha Vantage 備援。"
+        failure_detail = (
+            f"Yahoo 線上抓價失敗，且本地快取缺少本次所需月份；{alpha_detail} "
+            f"原因：{error}"
+        )
+        self.status.set(f"{mode_text}未完成：無可用價格資料，未執行公式計算或寫入紀錄。")
+        self.render_checks([
+            CheckItem("FAIL", "抓價與備援", failure_detail),
+            CheckItem("SKIP", "動能公式計算", "本次未執行，因 QQQ / TLT 缺少可用價格資料。"),
+            CheckItem("SKIP", "紀錄寫入", "本次未寫入 signals.csv，保留上一次成功計算紀錄。"),
+        ])
 
     def render(self, result: WorkflowResult) -> None:
         rows = result.rows
