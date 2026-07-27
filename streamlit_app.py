@@ -313,14 +313,12 @@ def render_signal(result: core.WorkflowResult) -> None:
     _, months = core.latest_price_context(result.rows)
     if result.is_preview:
         date_text = f"月底預估 {latest.execute_date}"
-    elif result.is_stale_formal:
-        date_text = f"資料落後快取回算 {latest.execute_date}"
     else:
         date_text = latest.execute_date
     change_text = "需要換倉" if latest.changed else "不用換倉"
     change_class = "change-yes" if latest.changed else "change-no"
-    score_prefix = "預估計算結果" if result.is_preview else ("資料落後快取結果" if result.is_stale_formal else "計算結果")
-    month_label = "預估基準月" if result.is_preview else ("快取可用月份" if result.is_stale_formal else "計算月份")
+    score_prefix = "預估計算結果" if result.is_preview else "計算結果"
+    month_label = "預估基準月" if result.is_preview else "計算月份"
     st.markdown(
         f"""
         <div class="signal-box">
@@ -380,6 +378,7 @@ def style_history(df: pd.DataFrame):
 
 def run(mode: str, alpha_key: str) -> None:
     preview = mode == "preview"
+    st.session_state.last_mode = mode
     with st.spinner("抓價與計算中..."):
         st.session_state.result = core.run_workflow(
             core.SIGNAL_START_MONTH,
@@ -387,14 +386,22 @@ def run(mode: str, alpha_key: str) -> None:
             core.SOURCE_YAHOO_ALPHA_BACKUP,
             alpha_key,
         )
-        st.session_state.last_mode = mode
 
 
 def fetch_failure_checks(alpha_key: str, error: str) -> list[core.CheckItem]:
     alpha_detail = "Alpha Vantage 也無法取得必要資料。" if alpha_key.strip() else "未輸入 Alpha Key，無法啟用 Alpha Vantage 備援。"
+    preview = st.session_state.get("last_mode") == "preview"
+    required_month = core.month_key(date.today()) if preview else core.latest_completed_month()
+    required_execute_date = core.first_trading_day_after_month(required_month).isoformat()
+    logged_dates = {row.execute_date for row in core.read_signal_log()}
+    log_detail = (
+        f"signals.csv 已有 {required_execute_date} 的正式紀錄。"
+        if required_execute_date in logged_dates
+        else f"signals.csv 尚未有 {required_execute_date} 的正式紀錄。"
+    )
     failure_detail = (
         f"Yahoo 線上抓價失敗，且本地快取缺少本次所需月份；{alpha_detail} "
-        f"原因：{error}"
+        f"本期需要 {required_month} 月價格，對應執行日 {required_execute_date}；{log_detail} 原因：{error}"
     )
     return [
         core.CheckItem("FAIL", "抓價與備援", failure_detail),
@@ -468,6 +475,7 @@ def main() -> None:
             st.session_state.pop("run_error", None)
         except Exception as exc:
             st.session_state.run_error = str(exc)
+            st.session_state.pop("result", None)
 
     if "result" not in st.session_state:
         existing = load_existing_result()
